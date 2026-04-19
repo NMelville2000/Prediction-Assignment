@@ -1,0 +1,149 @@
+---
+title: "Practical Machine Learning"
+author: "Nicky"
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Intro
+
+The aim of this project is to predict how well a person performed a weight lifting exercise. The outcome variable in the training data is `classe`. This variable has five possible classes, so this is a classification problem.
+
+I used a Random Forest model because it works well when there are many predictor variables and when the relationship between the predictors and the outcome may be complex. This dataset contains many sensor measurements, so Random Forest is a strong choice.
+
+## Loading the Data
+
+```{r load-data}
+library(caret)
+library(randomForest)
+library(dplyr)
+library(ggplot2)
+
+training <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", na.strings = c("NA", "", "#DIV/0!"))
+testing  <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",  na.strings = c("NA", "", "#DIV/0!"))
+```
+
+## Cleaning the Data
+
+Some columns contain mostly missing values, so they were removed. I also removed identification and timestamp related columns because they do not help explain the actual movement being performed. After that, I removed predictors with near zero variance.
+
+I also made sure that the outcome variable `classe` stayed as a factor with fixed levels. This avoids matching errors later when comparing predictions to the true answers.
+
+```{r clean-data}
+# Remove columns with more than 95% missing values
+na_cols <- colSums(is.na(training)) / nrow(training)
+training_clean <- training[, na_cols < 0.95]
+testing_clean  <- testing[, names(training_clean)[names(training_clean) != "classe"]]
+
+# Remove non useful identifier fields
+remove_cols <- c(
+  "X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2",
+  "cvtd_timestamp", "new_window", "num_window"
+)
+remove_cols <- remove_cols[remove_cols %in% names(training_clean)]
+
+training_clean <- training_clean %>% select(-all_of(remove_cols))
+testing_clean  <- testing_clean %>% select(-all_of(remove_cols))
+
+# Remove near zero variance predictors
+predictor_names <- setdiff(names(training_clean), "classe")
+nzv <- nearZeroVar(training_clean[, predictor_names])
+if (length(nzv) > 0) {
+  keep_predictors <- predictor_names[-nzv]
+  training_clean <- training_clean[, c(keep_predictors, "classe")]
+  testing_clean  <- testing_clean[, keep_predictors]
+}
+
+# Keep outcome levels consistent
+training_clean$classe <- factor(training_clean$classe)
+classe_levels <- levels(training_clean$classe)
+
+# Match any character or factor predictor types across both datasets
+common_predictors <- intersect(names(testing_clean), setdiff(names(training_clean), "classe"))
+for (col in common_predictors) {
+  if (is.character(training_clean[[col]]) || is.factor(training_clean[[col]]) ||
+      is.character(testing_clean[[col]]) || is.factor(testing_clean[[col]])) {
+    combined_levels <- unique(c(as.character(training_clean[[col]]), as.character(testing_clean[[col]])))
+    training_clean[[col]] <- factor(as.character(training_clean[[col]]), levels = combined_levels)
+    testing_clean[[col]]  <- factor(as.character(testing_clean[[col]]),  levels = combined_levels)
+  }
+}
+```
+
+## Splitting the Data
+
+The training data was split into 70% for model building and 30% for validation. I used the larger training part to fit the model and the remaining part to test how well it performs on unseen data.
+
+```{r split-data}
+set.seed(123)
+in_train <- createDataPartition(training_clean$classe, p = 0.70, list = FALSE)
+train_data <- training_clean[in_train, ]
+valid_data <- training_clean[-in_train, ]
+
+train_data$classe <- factor(train_data$classe, levels = classe_levels)
+valid_data$classe <- factor(valid_data$classe, levels = classe_levels)
+```
+
+## Building the Model
+
+I trained a Random Forest model on the 70% training split.
+
+```{r train-model}
+set.seed(123)
+rf_model <- randomForest(
+  classe ~ .,
+  data = train_data,
+  ntree = 250,
+  importance = TRUE
+)
+
+rf_model
+```
+
+## Model Performance
+
+To measure performance, I predicted the classes for the 30% validation set and compared them to the real classes.
+
+```{r validate-model}
+valid_pred <- predict(rf_model, newdata = valid_data)
+valid_pred <- factor(valid_pred, levels = classe_levels)
+reference <- factor(valid_data$classe, levels = classe_levels)
+
+cm <- confusionMatrix(data = valid_pred, reference = reference)
+cm
+
+accuracy <- cm$overall["Accuracy"]
+out_of_sample_error <- 1 - accuracy
+accuracy
+out_of_sample_error
+```
+
+The validation accuracy gives an estimate of how well the model should perform on new data. The expected out of sample error is calculated as `1 - accuracy`. Since Random Forest usually performs very well on this dataset, the error is expected to be very small.
+
+## Variable Importance
+
+```{r importance-plot, fig.height=5, fig.width=8}
+importance_values <- importance(rf_model)
+varImpPlot(rf_model, n.var = 20)
+```
+
+## Final Predictions for the 20 Test Cases
+
+After checking the model on the validation data, I used it to predict the 20 cases in the provided testing file.
+
+```{r final-predictions}
+final_predictions <- predict(rf_model, newdata = testing_clean)
+final_predictions <- factor(final_predictions, levels = classe_levels)
+final_predictions
+```
+
+## Why I Chose This Method
+
+I chose Random Forest because it is reliable for classification tasks with many variables. It can handle complex patterns and usually gives strong accuracy without needing a lot of manual tuning. It also works well when some variables are noisy or less useful.
+I also chose to clean the data before modeling because columns with too many missing values and columns that only identify the record do not help prediction. Removing them helps the model focus on the important sensor measurements.
+
+This project used a Random Forest model to predict the manner in which weight lifting exercises were performed. The data was cleaned by removing highly missing and non useful variables, then split into 70% training data and 30% validation data. The model was evaluated on the validation set to estimate out of sample error. Finally, the fitted model was used to predict the 20 unseen test cases.
